@@ -1,108 +1,187 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Shared Grid 1–500</title>
-
-<!-- Firebase compat SDK (no build tools needed) -->
-<script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
-
-<style>
-  body{font-family:-apple-system,system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:20px}
-  h1{margin:0 0 10px}
-  .ranges{margin:0 0 15px;display:flex;gap:8px;flex-wrap:wrap}
-  .ranges button{padding:8px 12px;border:1px solid #666;border-radius:6px;background:#fff;cursor:pointer}
-  .ranges button.active{background:#333;color:#fff;border-color:#333}
-  .grid{display:none;grid-template-columns:repeat(10,1fr);gap:6px;margin-bottom:20px}
-  .grid.active{display:grid}
-  .cell{border:1px solid #555;border-radius:4px;padding:10px;text-align:center;cursor:pointer;user-select:none;background:#f7f7f7}
-  .cell.on{background:#000;color:#fff}
-  .controls{display:flex;gap:8px;flex-wrap:wrap}
-  .controls button{padding:8px 12px;border:1px solid #666;border-radius:6px;background:#fff;cursor:pointer}
-</style>
+  <meta charset="UTF-8" />
+  <title>Free OCR → SRT → Translate</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    body { font-family: Arial; padding: 20px; background: #f8f8f8; }
+    .box { background: #fff; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+    textarea { width: 100%; height: 180px; padding: 10px; border-radius: 6px; }
+    button { padding: 10px 15px; margin-top: 10px; cursor: pointer; }
+  </style>
 </head>
 <body>
-  <h1>Shared Number Grid (1–500)</h1>
 
-  <div class="ranges" id="ranges"></div>
-  <div id="grids"></div>
+<h2>Video OCR → SRT → Translate (Free)</h2>
 
-  <div class="controls">
-    <button id="clearBtn">Clear Colors</button>
-  </div>
+<div class="box">
+  <label>Choose video:</label>
+  <input type="file" id="videoInput" accept="video/*">
+  <div id="status"></div>
+  <button id="extractBtn" disabled>Extract OCR → SRT</button>
+</div>
+
+<div class="box">
+  <h3>Original SRT</h3>
+  <textarea id="srtOriginal"></textarea>
+  <button onclick="downloadFile(srtOriginal.value, 'original.srt')">Download Original</button>
+</div>
+
+<div class="box">
+  <h3>Translate to:</h3>
+  <select id="lang">
+    <option value="ar">Arabic</option>
+    <option value="en">English</option>
+    <option value="fr">French</option>
+    <option value="es">Spanish</option>
+    <option value="de">German</option>
+    <option value="tr">Turkish</option>
+    <option value="ja">Japanese</option>
+  </select>
+  <button id="translateBtn">Translate</button>
+
+  <h3>Translated SRT</h3>
+  <textarea id="srtTranslated"></textarea>
+  <button onclick="downloadFile(srtTranslated.value, 'translated.srt')">Download Translated</button>
+</div>
+
+<video id="video" style="display:none;"></video>
+<canvas id="canvas" style="display:none;"></canvas>
 
 <script>
-// ===== Firebase config (from your project) =====
-const firebaseConfig = {
-  apiKey: "AIzaSyCWWnMsge75Q3_MDF9Aj9wo4C5KD6RVGfw",
-  authDomain: "q-matic-b7d77.firebaseapp.com",
-  databaseURL: "https://q-matic-b7d77-default-rtdb.firebaseio.com",
-  projectId: "q-matic-b7d77",
-  storageBucket: "q-matic-b7d77.firebasestorage.app",
-  messagingSenderId: "908187704899",
-  appId: "1:908187704899:web:b8bcf33cda90bafe81bef6",
-  measurementId: "G-VT1P6V5TEY"
-};
+const videoInput = document.getElementById("videoInput");
+const extractBtn = document.getElementById("extractBtn");
+const statusEl = document.getElementById("status");
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const srtOriginal = document.getElementById("srtOriginal");
+const srtTranslated = document.getElementById("srtTranslated");
 
-firebase.initializeApp(firebaseConfig);
-const db = firebase.database();
+let videoURL;
 
-// ===== Build UI =====
-const rangesEl = document.getElementById("ranges");
-const gridsEl  = document.getElementById("grids");
-const grids = [], buttons = [], cells = [];
+// Load video
+videoInput.addEventListener("change", () => {
+  const file = videoInput.files[0];
+  if (!file) return;
+  if (videoURL) URL.revokeObjectURL(videoURL);
 
-for (let r = 0; r < 5; r++) {
-  const start = r*100 + 1, end = (r+1)*100;
+  videoURL = URL.createObjectURL(file);
+  video.src = videoURL;
 
-  // range button
-  const btn = document.createElement("button");
-  btn.textContent = `${start}–${end}`;
-  btn.addEventListener("click", () => showGrid(r));
-  rangesEl.appendChild(btn);
-  buttons.push(btn);
-
-  // grid of 100 numbers
-  const grid = document.createElement("div");
-  grid.className = "grid";
-  for (let n = start; n <= end; n++) {
-    const div = document.createElement("div");
-    div.textContent = n;
-    div.className = "cell";
-    div.addEventListener("click", () => toggleCell(n));
-    grid.appendChild(div);
-    cells[n] = div;
-  }
-  grids.push(grid);
-  gridsEl.appendChild(grid);
-}
-
-function showGrid(r) {
-  grids.forEach((g, i) => g.classList.toggle("active", i === r));
-  buttons.forEach((b, i) => b.classList.toggle("active", i === r));
-}
-showGrid(0);
-
-// ===== Realtime sync =====
-db.ref("grid").on("value", snap => {
-  const data = snap.val() || {};
-  for (let i = 1; i <= 500; i++) {
-    if (cells[i]) cells[i].classList.toggle("on", !!data[i]);
-  }
+  video.onloadedmetadata = () => {
+    extractBtn.disabled = false;
+    statusEl.textContent = "Video loaded.";
+  };
 });
 
-function toggleCell(num) {
-  const ref = db.ref("grid/"+num);
-  ref.once("value").then(snap => {
-    ref.set(!snap.val());
-  });
+// Format SRT timestamps
+function srtTime(t) {
+  const ms = Math.floor((t % 1) * 1000);
+  const s = Math.floor(t) % 60;
+  const m = Math.floor(t / 60) % 60;
+  const h = Math.floor(t / 3600);
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")},${String(ms).padStart(3,"0")}`;
 }
 
-document.getElementById("clearBtn").addEventListener("click", () => {
-  db.ref("grid").set({});
+// Extract OCR → SRT
+extractBtn.addEventListener("click", async () => {
+  extractBtn.disabled = true;
+  const duration = video.duration;
+  const step = 1.0;
+
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+
+  let cues = [];
+  let lastText = "";
+  let startTime = 0;
+  let index = 1;
+
+  for (let t = 0; t < duration; t += step) {
+    statusEl.textContent = `OCR at ${t.toFixed(1)}s...`;
+    await new Promise(res => {
+      video.currentTime = t;
+      video.onseeked = res;
+    });
+
+    ctx.drawImage(video, 0, 0);
+    const ocr = await Tesseract.recognize(canvas, "eng");
+    const text = ocr.data.text.trim().replace(/\s+/g, " ");
+
+    if (text && text !== lastText) {
+      if (lastText) {
+        cues.push({
+          index,
+          start: startTime,
+          end: t,
+          text: lastText
+        });
+        index++;
+      }
+      lastText = text;
+      startTime = t;
+    }
+  }
+
+  if (lastText) {
+    cues.push({ index, start: startTime, end: duration, text: lastText });
+  }
+
+  let srt = cues.map(c =>
+    `${c.index}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.text}\n`
+  ).join("\n");
+
+  srtOriginal.value = srt;
+  extractBtn.disabled = false;
+  statusEl.textContent = "Done!";
 });
+
+// Translate via LibreTranslate API (free)
+document.getElementById("translateBtn").addEventListener("click", async () => {
+  const lang = document.getElementById("lang").value;
+  const srtText = srtOriginal.value.trim();
+  if (!srtText) return alert("No SRT to translate");
+
+  const cues = srtText.split(/\n\n+/);
+  let translatedSrt = "";
+  
+  for (let block of cues) {
+    const lines = block.split("\n");
+    if (lines.length < 3) continue;
+
+    const [index, time, ...textLines] = lines;
+    const originalText = textLines.join(" ");
+
+    const res = await fetch("https://libretranslate.de/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        q: originalText,
+        source: "auto",
+        target: lang,
+        format: "text"
+      })
+    });
+
+    const data = await res.json();
+    translatedSrt += `${index}\n${time}\n${data.translatedText}\n\n`;
+  }
+
+  srtTranslated.value = translatedSrt;
+});
+
+// Download
+function downloadFile(text, name) {
+  const blob = new Blob([text], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+}
 </script>
+
 </body>
 </html>
