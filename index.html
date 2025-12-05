@@ -2,14 +2,22 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Free OCR → SRT → Translate</title>
+  <title>Video OCR → SRT → Translate (Free)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <style>
-    body { font-family: Arial; padding: 20px; background: #f8f8f8; }
-    .box { background: #fff; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
-    textarea { width: 100%; height: 180px; padding: 10px; border-radius: 6px; }
-    button { padding: 10px 15px; margin-top: 10px; cursor: pointer; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 20px; background: #f8f8f8; }
+    h2 { margin-top: 0; }
+    .box { background: #fff; padding: 15px; border-radius: 10px; margin-bottom: 18px; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
+    label { font-weight: 600; display: block; margin-bottom: 6px; }
+    input[type="file"], select, input[type="number"] { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; margin-bottom: 8px; }
+    textarea { width: 100%; height: 180px; padding: 10px; border-radius: 8px; border: 1px solid #ccc; box-sizing: border-box; }
+    button { padding: 9px 14px; margin-top: 8px; margin-right: 6px; border-radius: 999px; border: none; cursor: pointer; font: inherit; }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .primary { background: #1976d2; color: #fff; }
+    .secondary { background: #e0e0e0; }
+    #status { margin-top: 6px; font-size: 0.9rem; color: #555; }
+    small { color: #777; font-size: 0.8rem; display: block; margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -19,14 +27,21 @@
 <div class="box">
   <label>Choose video:</label>
   <input type="file" id="videoInput" accept="video/*">
+
+  <label for="stepPercent">Sampling step (% of video duration between OCR frames):</label>
+  <input type="number" id="stepPercent" min="0.5" max="20" step="0.5" value="2">
+  <small>
+    Example: 2% → about 50 frames for the whole video. Smaller % = أدق بس أبطأ.
+  </small>
+
+  <button id="extractBtn" class="primary" disabled>Extract OCR → SRT</button>
   <div id="status"></div>
-  <button id="extractBtn" disabled>Extract OCR → SRT</button>
 </div>
 
 <div class="box">
   <h3>Original SRT</h3>
   <textarea id="srtOriginal"></textarea>
-  <button onclick="downloadFile(srtOriginal.value, 'original.srt')">Download Original</button>
+  <button class="secondary" onclick="downloadFile(srtOriginal.value, 'original.srt')">Download Original</button>
 </div>
 
 <div class="box">
@@ -40,27 +55,28 @@
     <option value="tr">Turkish</option>
     <option value="ja">Japanese</option>
   </select>
-  <button id="translateBtn">Translate</button>
+  <button id="translateBtn" class="primary">Translate</button>
 
   <h3>Translated SRT</h3>
   <textarea id="srtTranslated"></textarea>
-  <button onclick="downloadFile(srtTranslated.value, 'translated.srt')">Download Translated</button>
+  <button class="secondary" onclick="downloadFile(srtTranslated.value, 'translated.srt')">Download Translated</button>
 </div>
 
 <video id="video" style="display:none;"></video>
 <canvas id="canvas" style="display:none;"></canvas>
 
 <script>
-const videoInput = document.getElementById("videoInput");
-const extractBtn = document.getElementById("extractBtn");
-const statusEl = document.getElementById("status");
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-const srtOriginal = document.getElementById("srtOriginal");
-const srtTranslated = document.getElementById("srtTranslated");
+const videoInput     = document.getElementById("videoInput");
+const extractBtn     = document.getElementById("extractBtn");
+const statusEl       = document.getElementById("status");
+const video          = document.getElementById("video");
+const canvas         = document.getElementById("canvas");
+const ctx            = canvas.getContext("2d");
+const srtOriginal    = document.getElementById("srtOriginal");
+const srtTranslated  = document.getElementById("srtTranslated");
+const stepPercentInp = document.getElementById("stepPercent");
 
-let videoURL;
+let videoURL = null;
 
 // Load video
 videoInput.addEventListener("change", () => {
@@ -73,55 +89,59 @@ videoInput.addEventListener("change", () => {
 
   video.onloadedmetadata = () => {
     extractBtn.disabled = false;
-    statusEl.textContent = "Video loaded.";
+    statusEl.textContent = `Video loaded. Duration: ${video.duration.toFixed(1)}s`;
   };
 });
 
 // Format SRT timestamps
 function srtTime(t) {
   const ms = Math.floor((t % 1) * 1000);
-  const s = Math.floor(t) % 60;
-  const m = Math.floor(t / 60) % 60;
-  const h = Math.floor(t / 3600);
-  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")},${String(ms).padStart(3,"0")}`;
+  const s  = Math.floor(t) % 60;
+  const m  = Math.floor(t / 60) % 60;
+  const h  = Math.floor(t / 3600);
+  const pad = (n,z=2)=>String(n).padStart(z,"0");
+  return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms,3)}`;
 }
 
 // Extract OCR → SRT
 extractBtn.addEventListener("click", async () => {
   extractBtn.disabled = true;
-  const duration = video.duration;
-  const step = 1.0;
 
-  canvas.width = video.videoWidth;
+  const duration = video.duration;
+  let stepPercent = parseFloat(stepPercentInp.value);
+  if (!stepPercent || stepPercent <= 0) stepPercent = 2; // default
+  if (stepPercent > 50) stepPercent = 50;
+
+  let step = duration * (stepPercent / 100);
+  if (step <= 0) step = 1;
+
+  canvas.width  = video.videoWidth;
   canvas.height = video.videoHeight;
 
-  let cues = [];
-  let lastText = "";
+  let cues      = [];
+  let lastText  = "";
   let startTime = 0;
-  let index = 1;
+  let index     = 1;
 
   for (let t = 0; t < duration; t += step) {
-    statusEl.textContent = `OCR at ${t.toFixed(1)}s...`;
+    const progress = ((t / duration) * 100).toFixed(1);
+    statusEl.textContent = `OCR at ${progress}% (${t.toFixed(1)}s / ${duration.toFixed(1)}s)...`;
+
     await new Promise(res => {
       video.currentTime = t;
       video.onseeked = res;
     });
 
-    ctx.drawImage(video, 0, 0);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const ocr = await Tesseract.recognize(canvas, "eng");
     const text = ocr.data.text.trim().replace(/\s+/g, " ");
 
     if (text && text !== lastText) {
       if (lastText) {
-        cues.push({
-          index,
-          start: startTime,
-          end: t,
-          text: lastText
-        });
+        cues.push({ index, start: startTime, end: t, text: lastText });
         index++;
       }
-      lastText = text;
+      lastText  = text;
       startTime = t;
     }
   }
@@ -130,30 +150,31 @@ extractBtn.addEventListener("click", async () => {
     cues.push({ index, start: startTime, end: duration, text: lastText });
   }
 
-  let srt = cues.map(c =>
+  const srt = cues.map(c =>
     `${c.index}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.text}\n`
   ).join("\n");
 
   srtOriginal.value = srt;
   extractBtn.disabled = false;
-  statusEl.textContent = "Done!";
+  statusEl.textContent = `Done! 100% (${duration.toFixed(1)}s). Found ${cues.length} cues.`;
 });
 
 // Translate via LibreTranslate API (free)
 document.getElementById("translateBtn").addEventListener("click", async () => {
-  const lang = document.getElementById("lang").value;
+  const lang    = document.getElementById("lang").value;
   const srtText = srtOriginal.value.trim();
-  if (!srtText) return alert("No SRT to translate");
+  if (!srtText) return alert("No SRT to translate.");
 
-  const cues = srtText.split(/\n\n+/);
+  const blocks = srtText.split(/\n\n+/);
   let translatedSrt = "";
-  
-  for (let block of cues) {
+
+  for (const block of blocks) {
     const lines = block.split("\n");
     if (lines.length < 3) continue;
 
-    const [index, time, ...textLines] = lines;
-    const originalText = textLines.join(" ");
+    const index = lines[0];
+    const time  = lines[1];
+    const originalText = lines.slice(2).join(" ");
 
     const res = await fetch("https://libretranslate.de/translate", {
       method: "POST",
@@ -173,13 +194,17 @@ document.getElementById("translateBtn").addEventListener("click", async () => {
   srtTranslated.value = translatedSrt;
 });
 
-// Download
+// Download helper
 function downloadFile(text, name) {
-  const blob = new Blob([text], { type: "text/plain" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url;
   a.download = name;
+  document.body.appendChild(a);
   a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 </script>
 
